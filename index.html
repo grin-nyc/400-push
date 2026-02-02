@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Push-Up Tabata Workout</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        function PushupTabata() {
+            const TOTAL_GOAL = 400;
+            const MIN_REPS = 10;
+            const MAX_REPS = 20;
+            
+            const [totalCompleted, setTotalCompleted] = useState(0);
+            const [currentReps, setCurrentReps] = useState(0);
+            const [isResting, setIsResting] = useState(false);
+            const [restTimeLeft, setRestTimeLeft] = useState(0);
+            const [setHistory, setSetHistory] = useState([]);
+            const [workoutComplete, setWorkoutComplete] = useState(false);
+            const [startTime, setStartTime] = useState(null);
+            const [endTime, setEndTime] = useState(null);
+            const [soundEnabled, setSoundEnabled] = useState(true);
+            const [voiceEnabled, setVoiceEnabled] = useState(true);
+            
+            const audioContextRef = useRef(null);
+            
+            useEffect(() => {
+                audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+            }, []);
+            
+            const playSound = (frequency, duration, type = 'sine') => {
+                if (!soundEnabled || !audioContextRef.current) return;
+                
+                const ctx = audioContextRef.current;
+                const oscillator = ctx.createOscillator();
+                const gainNode = ctx.createGain();
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(ctx.destination);
+                
+                oscillator.frequency.value = frequency;
+                oscillator.type = type;
+                
+                gainNode.gain.setValueAtTime(0.3, ctx.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + duration);
+                
+                oscillator.start(ctx.currentTime);
+                oscillator.stop(ctx.currentTime + duration);
+            };
+            
+            const sounds = {
+                setComplete: () => {
+                    playSound(800, 0.1);
+                    setTimeout(() => playSound(1000, 0.15), 100);
+                },
+                countdown: () => playSound(600, 0.1),
+                countdownFinal: () => {
+                    playSound(600, 0.1);
+                    setTimeout(() => playSound(700, 0.1), 100);
+                    setTimeout(() => playSound(800, 0.15), 200);
+                },
+                workoutComplete: () => {
+                    playSound(800, 0.2);
+                    setTimeout(() => playSound(1000, 0.2), 150);
+                    setTimeout(() => playSound(1200, 0.3), 300);
+                }
+            };
+            
+            const speak = (text, rate = 1) => {
+                if (!voiceEnabled || !window.speechSynthesis) return;
+                
+                window.speechSynthesis.cancel();
+                
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.rate = rate;
+                utterance.pitch = 1;
+                utterance.volume = 1;
+                
+                window.speechSynthesis.speak(utterance);
+            };
+            
+            const generateReps = () => {
+                const remaining = TOTAL_GOAL - totalCompleted;
+                if (remaining <= 0) return 0;
+                
+                const maxPossible = Math.min(MAX_REPS, remaining);
+                const minPossible = Math.min(MIN_REPS, remaining);
+                
+                return Math.floor(Math.random() * (maxPossible - minPossible + 1)) + minPossible;
+            };
+            
+            const calculateRestTime = (reps) => {
+                const baseRest = 15;
+                const perRepRest = 1;
+                return baseRest + (reps * perRepRest);
+            };
+            
+            useEffect(() => {
+                const initialReps = generateReps();
+                setCurrentReps(initialReps);
+                setStartTime(Date.now());
+                
+                setTimeout(() => {
+                    speak(`Let's go! ${initialReps} push ups`);
+                }, 500);
+            }, []);
+            
+            useEffect(() => {
+                if (isResting && restTimeLeft > 0) {
+                    if (restTimeLeft <= 3) {
+                        sounds.countdownFinal();
+                        speak(restTimeLeft.toString(), 1.2);
+                    } else if (restTimeLeft <= 10) {
+                        sounds.countdown();
+                        if (restTimeLeft === 10 || restTimeLeft === 5) {
+                            speak(restTimeLeft.toString());
+                        }
+                    }
+                    
+                    const timer = setTimeout(() => {
+                        setRestTimeLeft(restTimeLeft - 1);
+                    }, 1000);
+                    return () => clearTimeout(timer);
+                } else if (isResting && restTimeLeft === 0) {
+                    setIsResting(false);
+                    const newReps = generateReps();
+                    setCurrentReps(newReps);
+                    
+                    speak(`${newReps}`);
+                    
+                    if (totalCompleted >= TOTAL_GOAL) {
+                        setWorkoutComplete(true);
+                        setEndTime(Date.now());
+                        sounds.workoutComplete();
+                        speak("Workout complete! Great job!");
+                    }
+                }
+            }, [isResting, restTimeLeft, totalCompleted]);
+            
+            const handleSetComplete = () => {
+                if (isResting || workoutComplete) return;
+                
+                sounds.setComplete();
+                speak("Good!", 1.2);
+                
+                const newTotal = totalCompleted + currentReps;
+                setTotalCompleted(newTotal);
+                setSetHistory([...setHistory, currentReps]);
+                
+                if (newTotal >= TOTAL_GOAL) {
+                    setWorkoutComplete(true);
+                    setEndTime(Date.now());
+                    sounds.workoutComplete();
+                    setTimeout(() => speak("Workout complete! Great job!"), 300);
+                } else {
+                    const restDuration = calculateRestTime(currentReps);
+                    setRestTimeLeft(restDuration);
+                    setIsResting(true);
+                }
+            };
+            
+            const resetWorkout = () => {
+                setTotalCompleted(0);
+                setCurrentReps(generateReps());
+                setIsResting(false);
+                setRestTimeLeft(0);
+                setSetHistory([]);
+                setWorkoutComplete(false);
+                setStartTime(Date.now());
+                setEndTime(null);
+            };
+            
+            const progressPercentage = Math.min((totalCompleted / TOTAL_GOAL) * 100, 100);
+            const totalDuration = endTime && startTime ? Math.floor((endTime - startTime) / 1000) : 0;
+            const minutes = Math.floor(totalDuration / 60);
+            const seconds = totalDuration % 60;
+
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center p-4">
+                    <div className="w-full max-w-md">
+                        <div className="mb-4 flex justify-end gap-2">
+                            <button
+                                onClick={() => setSoundEnabled(!soundEnabled)}
+                                className="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-full text-sm transition-colors flex items-center gap-2"
+                            >
+                                {soundEnabled ? '🔊' : '🔇'}
+                                <span>{soundEnabled ? 'Beeps' : 'No Beeps'}</span>
+                            </button>
+                            <button
+                                onClick={() => setVoiceEnabled(!voiceEnabled)}
+                                className="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-full text-sm transition-colors flex items-center gap-2"
+                            >
+                                {voiceEnabled ? '🗣️' : '🤐'}
+                                <span>{voiceEnabled ? 'Voice' : 'No Voice'}</span>
+                            </button>
+                        </div>
+                        
+                        <div className="mb-8">
+                            <div className="flex justify-between text-white mb-2">
+                                <span className="font-bold text-lg">{totalCompleted} / {TOTAL_GOAL}</span>
+                                <span className="font-bold text-lg">{Math.floor(progressPercentage)}%</span>
+                            </div>
+                            <div className="w-full bg-slate-700 rounded-full h-4 overflow-hidden">
+                                <div 
+                                    className="bg-gradient-to-r from-green-400 to-emerald-500 h-full transition-all duration-500 ease-out"
+                                    style={{ width: `${progressPercentage}%` }}
+                                />
+                            </div>
+                        </div>
+
+                        <div 
+                            onClick={handleSetComplete}
+                            className={`bg-slate-800 rounded-3xl p-12 shadow-2xl border-4 transition-all duration-300 ${
+                                workoutComplete 
+                                    ? 'border-green-500 cursor-default' 
+                                    : isResting 
+                                        ? 'border-yellow-500 cursor-default' 
+                                        : 'border-purple-500 cursor-pointer hover:border-purple-400 hover:shadow-purple-500/50 active:scale-95'
+                            }`}
+                        >
+                            {workoutComplete ? (
+                                <div className="text-center">
+                                    <div className="text-6xl mb-4">🎉</div>
+                                    <h2 className="text-4xl font-bold text-green-400 mb-4">Complete!</h2>
+                                    <p className="text-white text-xl mb-2">Total: {totalCompleted} push-ups</p>
+                                    <p className="text-slate-300 text-lg mb-2">Sets: {setHistory.length}</p>
+                                    <p className="text-slate-300 text-lg mb-6">Time: {minutes}m {seconds}s</p>
+                                    <button
+                                        onClick={resetWorkout}
+                                        className="bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-8 rounded-full transition-colors"
+                                    >
+                                        Start New Workout
+                                    </button>
+                                </div>
+                            ) : isResting ? (
+                                <div className="text-center">
+                                    <div className="text-yellow-400 text-xl font-bold mb-4">REST</div>
+                                    <div className="text-9xl font-bold text-white mb-4">{restTimeLeft}</div>
+                                    <p className="text-slate-300 text-lg mb-4">Get ready for next set...</p>
+                                    <button
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            setRestTimeLeft(0);
+                                        }}
+                                        className="bg-slate-700 hover:bg-slate-600 text-white font-semibold py-2 px-6 rounded-full text-sm transition-colors"
+                                    >
+                                        Skip Rest
+                                    </button>
+                                </div>
+                            ) : (
+                                <div className="text-center">
+                                    <div className="text-purple-400 text-xl font-bold mb-4">DO</div>
+                                    <div className="text-9xl font-bold text-white mb-4">{currentReps}</div>
+                                    <p className="text-slate-300 text-lg">Tap when complete</p>
+                                </div>
+                            )}
+                        </div>
+
+                        {setHistory.length > 0 && !workoutComplete && (
+                            <div className="mt-6 text-center">
+                                <p className="text-slate-400 text-sm mb-2">Recent sets:</p>
+                                <div className="flex flex-wrap justify-center gap-2">
+                                    {setHistory.slice(-10).map((reps, idx) => (
+                                        <span key={idx} className="bg-slate-700 text-white px-3 py-1 rounded-full text-sm">
+                                            {reps}
+                                        </span>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {!workoutComplete && totalCompleted > 0 && (
+                            <div className="mt-6 text-center">
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        resetWorkout();
+                                    }}
+                                    className="text-slate-400 hover:text-white text-sm underline"
+                                >
+                                    Reset Workout
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        ReactDOM.render(<PushupTabata />, document.getElementById('root'));
+    </script>
+</body>
+</html>
