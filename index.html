@@ -27,9 +27,58 @@
         const { useState, useEffect, useRef } = React;
 
         function PushupTabata() {
-            const TOTAL_GOAL = 400;
-            const MIN_REPS = 10;
-            const MAX_REPS = 20;
+            // Load saved state from localStorage
+            const loadSavedState = () => {
+                const saved = localStorage.getItem('currentWorkout');
+                if (saved) {
+                    try {
+                        return JSON.parse(saved);
+                    } catch (e) {
+                        return null;
+                    }
+                }
+                return null;
+            };
+
+            // Load workout history
+            const loadHistory = () => {
+                const history = localStorage.getItem('workoutHistory');
+                if (history) {
+                    try {
+                        return JSON.parse(history);
+                    } catch (e) {
+                        return [];
+                    }
+                }
+                return [];
+            };
+
+            const savedState = loadSavedState();
+            const [showResume, setShowResume] = useState(!!savedState && !savedState.workoutComplete);
+            const [showModeSelect, setShowModeSelect] = useState(!savedState);
+            const [workoutMode, setWorkoutMode] = useState(savedState?.workoutMode || 'full'); // 'full' or 'quickie'
+            
+            // Workout parameters based on mode
+            const getWorkoutParams = () => {
+                if (workoutMode === 'quickie') {
+                    return {
+                        TOTAL_GOAL: 100,
+                        MIN_REPS: 10,
+                        MAX_REPS: 10,
+                        BASE_REST: 40,
+                        PER_REP_REST: 0
+                    };
+                }
+                return {
+                    TOTAL_GOAL: 400,
+                    MIN_REPS: 10,
+                    MAX_REPS: 20,
+                    BASE_REST: 15,
+                    PER_REP_REST: 1
+                };
+            };
+
+            const params = getWorkoutParams();
             
             const [totalCompleted, setTotalCompleted] = useState(0);
             const [currentReps, setCurrentReps] = useState(0);
@@ -41,12 +90,56 @@
             const [endTime, setEndTime] = useState(null);
             const [soundEnabled, setSoundEnabled] = useState(true);
             const [voiceEnabled, setVoiceEnabled] = useState(true);
+            const [workoutHistory, setWorkoutHistory] = useState(loadHistory());
+            const [showHistory, setShowHistory] = useState(false);
             
             const audioContextRef = useRef(null);
+            const wakeLockRef = useRef(null);
             
             useEffect(() => {
                 audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
             }, []);
+
+            // Request wake lock to keep screen on
+            const requestWakeLock = async () => {
+                try {
+                    if ('wakeLock' in navigator) {
+                        wakeLockRef.current = await navigator.wakeLock.request('screen');
+                        console.log('Screen wake lock activated');
+                        
+                        // Re-acquire wake lock if it's released (e.g., when tab becomes visible again)
+                        wakeLockRef.current.addEventListener('release', () => {
+                            console.log('Screen wake lock released');
+                        });
+                    }
+                } catch (err) {
+                    console.log('Wake lock error:', err);
+                }
+            };
+
+            // Release wake lock when workout ends
+            const releaseWakeLock = () => {
+                if (wakeLockRef.current) {
+                    wakeLockRef.current.release();
+                    wakeLockRef.current = null;
+                    console.log('Screen wake lock released manually');
+                }
+            };
+
+            // Activate wake lock when workout starts, release when complete
+            useEffect(() => {
+                if (!showResume && !workoutComplete && startTime) {
+                    requestWakeLock();
+                }
+                if (workoutComplete) {
+                    releaseWakeLock();
+                }
+                
+                // Cleanup on unmount
+                return () => {
+                    releaseWakeLock();
+                };
+            }, [showResume, workoutComplete, startTime]);
             
             const playSound = (frequency, duration, type = 'sine') => {
                 if (!soundEnabled || !audioContextRef.current) return;
@@ -100,29 +193,86 @@
             };
             
             const generateReps = () => {
-                const remaining = TOTAL_GOAL - totalCompleted;
-                if (remaining <= 0) return 0;
-                
-                const maxPossible = Math.min(MAX_REPS, remaining);
-                const minPossible = Math.min(MIN_REPS, remaining);
-                
-                return Math.floor(Math.random() * (maxPossible - minPossible + 1)) + minPossible;
+                // Allow unlimited push-ups - no cap
+                return Math.floor(Math.random() * (params.MAX_REPS - params.MIN_REPS + 1)) + params.MIN_REPS;
             };
             
             const calculateRestTime = (reps) => {
-                const baseRest = 15;
-                const perRepRest = 1;
-                return baseRest + (reps * perRepRest);
+                return params.BASE_REST + (reps * params.PER_REP_REST);
             };
-            
+
+            // Save current workout state to localStorage
             useEffect(() => {
+                if (!showResume) {
+                    const state = {
+                        totalCompleted,
+                        currentReps,
+                        setHistory,
+                        startTime,
+                        workoutComplete,
+                        workoutMode
+                    };
+                    localStorage.setItem('currentWorkout', JSON.stringify(state));
+                }
+            }, [totalCompleted, currentReps, setHistory, workoutComplete, showResume, workoutMode]);
+
+            // Save workout history when workout completes
+            const saveCompletedWorkout = (total, time, sets) => {
+                const newWorkout = {
+                    date: new Date().toISOString(),
+                    total,
+                    time,
+                    sets,
+                    completed: total >= params.TOTAL_GOAL,
+                    mode: workoutMode
+                };
+                const updatedHistory = [newWorkout, ...workoutHistory].slice(0, 10); // Keep last 10
+                setWorkoutHistory(updatedHistory);
+                localStorage.setItem('workoutHistory', JSON.stringify(updatedHistory));
+            };
+
+            // Resume saved workout
+            const resumeWorkout = () => {
+                if (savedState) {
+                    setTotalCompleted(savedState.totalCompleted);
+                    setCurrentReps(savedState.currentReps);
+                    setSetHistory(savedState.setHistory);
+                    setStartTime(savedState.startTime);
+                    setShowResume(false);
+                    speak(`Resuming workout. ${savedState.currentReps} push ups`);
+                }
+            };
+
+            // Start fresh workout
+            const startFreshWorkout = () => {
+                localStorage.removeItem('currentWorkout');
+                setShowResume(false);
+                setShowModeSelect(true);
+            };
+
+            // Start workout with selected mode
+            const startWorkoutWithMode = (mode) => {
+                setWorkoutMode(mode);
+                setShowModeSelect(false);
                 const initialReps = generateReps();
                 setCurrentReps(initialReps);
                 setStartTime(Date.now());
-                
                 setTimeout(() => {
-                    speak(`Let's go! ${initialReps} push ups`);
+                    const goal = mode === 'quickie' ? 100 : 400;
+                    speak(`Let's go! ${goal} push ups. ${initialReps} reps`);
                 }, 500);
+            };
+            
+            useEffect(() => {
+                if (!showResume && !savedState && !showModeSelect && workoutMode) {
+                    const initialReps = generateReps();
+                    setCurrentReps(initialReps);
+                    setStartTime(Date.now());
+                    
+                    setTimeout(() => {
+                        speak(`Let's go! ${initialReps} push ups`);
+                    }, 500);
+                }
             }, []);
             
             useEffect(() => {
@@ -145,17 +295,9 @@
                     setIsResting(false);
                     const newReps = generateReps();
                     setCurrentReps(newReps);
-                    
                     speak(`${newReps}`);
-                    
-                    if (totalCompleted >= TOTAL_GOAL) {
-                        setWorkoutComplete(true);
-                        setEndTime(Date.now());
-                        sounds.workoutComplete();
-                        speak("Workout complete! Great job!");
-                    }
                 }
-            }, [isResting, restTimeLeft, totalCompleted]);
+            }, [isResting, restTimeLeft]);
             
             const handleSetComplete = () => {
                 if (isResting || workoutComplete) return;
@@ -167,57 +309,201 @@
                 setTotalCompleted(newTotal);
                 setSetHistory([...setHistory, currentReps]);
                 
-                if (newTotal >= TOTAL_GOAL) {
-                    setWorkoutComplete(true);
-                    setEndTime(Date.now());
-                    sounds.workoutComplete();
-                    setTimeout(() => speak("Workout complete! Great job!"), 300);
-                } else {
-                    const restDuration = calculateRestTime(currentReps);
-                    setRestTimeLeft(restDuration);
-                    setIsResting(true);
-                }
+                const restDuration = calculateRestTime(currentReps);
+                setRestTimeLeft(restDuration);
+                setIsResting(true);
+            };
+
+            // Manual finish workout button
+            const finishWorkout = () => {
+                setWorkoutComplete(true);
+                const endT = Date.now();
+                setEndTime(endT);
+                const duration = Math.floor((endT - startTime) / 1000);
+                
+                // Save to history
+                saveCompletedWorkout(totalCompleted, duration, setHistory.length);
+                
+                // Clear current workout from localStorage
+                localStorage.removeItem('currentWorkout');
+                
+                sounds.workoutComplete();
+                setTimeout(() => speak("Workout complete! Great job!"), 300);
             };
             
             const resetWorkout = () => {
+                localStorage.removeItem('currentWorkout');
                 setTotalCompleted(0);
-                setCurrentReps(generateReps());
+                const newReps = generateReps();
+                setCurrentReps(newReps);
                 setIsResting(false);
                 setRestTimeLeft(0);
                 setSetHistory([]);
                 setWorkoutComplete(false);
                 setStartTime(Date.now());
                 setEndTime(null);
+                setTimeout(() => speak(`Let's go! ${newReps} push ups`), 300);
             };
             
-            const progressPercentage = Math.min((totalCompleted / TOTAL_GOAL) * 100, 100);
+            const progressPercentage = Math.min((totalCompleted / params.TOTAL_GOAL) * 100, 100);
             const totalDuration = endTime && startTime ? Math.floor((endTime - startTime) / 1000) : 0;
             const minutes = Math.floor(totalDuration / 60);
             const seconds = totalDuration % 60;
 
             return (
                 <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center p-4">
-                    <div className="w-full max-w-md">
-                        <div className="mb-4 flex justify-end gap-2">
-                            <button
-                                onClick={() => setSoundEnabled(!soundEnabled)}
-                                className="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-full text-sm transition-colors flex items-center gap-2"
-                            >
-                                {soundEnabled ? '🔊' : '🔇'}
-                                <span>{soundEnabled ? 'Beeps' : 'No Beeps'}</span>
-                            </button>
-                            <button
-                                onClick={() => setVoiceEnabled(!voiceEnabled)}
-                                className="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-full text-sm transition-colors flex items-center gap-2"
-                            >
-                                {voiceEnabled ? '🗣️' : '🤐'}
-                                <span>{voiceEnabled ? 'Voice' : 'No Voice'}</span>
-                            </button>
+                    {showModeSelect ? (
+                        <div className="w-full max-w-md">
+                            <div className="bg-slate-800 rounded-3xl p-8 shadow-2xl border-4 border-purple-500">
+                                <div className="text-center mb-8">
+                                    <h2 className="text-4xl font-bold text-white mb-2">Choose Workout</h2>
+                                    <p className="text-slate-400">Select your push-up challenge</p>
+                                </div>
+                                
+                                <div className="space-y-4">
+                                    <button
+                                        onClick={() => startWorkoutWithMode('full')}
+                                        className="w-full bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 text-white rounded-2xl p-6 transition-all transform hover:scale-105"
+                                    >
+                                        <div className="text-6xl font-bold mb-2">400</div>
+                                        <div className="text-xl font-bold mb-2">Full Workout</div>
+                                        <div className="text-sm text-purple-200">10-20 reps/set • Smart rest</div>
+                                        <div className="text-sm text-purple-200">~18-20 minutes</div>
+                                    </button>
+                                    
+                                    <button
+                                        onClick={() => startWorkoutWithMode('quickie')}
+                                        className="w-full bg-gradient-to-r from-green-600 to-emerald-700 hover:from-green-700 hover:to-emerald-800 text-white rounded-2xl p-6 transition-all transform hover:scale-105"
+                                    >
+                                        <div className="text-6xl font-bold mb-2">100</div>
+                                        <div className="text-xl font-bold mb-2">Quickie ⚡</div>
+                                        <div className="text-sm text-green-200">10 reps/set • 40s rest</div>
+                                        <div className="text-sm text-green-200">~8-10 minutes</div>
+                                    </button>
+                                </div>
+                            </div>
                         </div>
+                    ) : showResume ? (
+                        <div className="w-full max-w-md">
+                            <div className="bg-slate-800 rounded-3xl p-8 shadow-2xl border-4 border-purple-500">
+                                <div className="text-center">
+                                    <h2 className="text-3xl font-bold text-white mb-4">Resume Workout?</h2>
+                                    <div className="mb-2">
+                                        <span className={`px-4 py-1 rounded-full text-sm font-bold ${
+                                            savedState.workoutMode === 'quickie' 
+                                                ? 'bg-green-600 text-white' 
+                                                : 'bg-purple-600 text-white'
+                                        }`}>
+                                            {savedState.workoutMode === 'quickie' ? 'Quickie 100' : 'Full 400'}
+                                        </span>
+                                    </div>
+                                    <div className="mb-6">
+                                        <div className="text-6xl font-bold text-purple-400 mb-2">
+                                            {savedState.totalCompleted}
+                                        </div>
+                                        <p className="text-slate-300 text-lg">push-ups completed</p>
+                                        <p className="text-slate-400 text-sm mt-2">
+                                            {savedState.setHistory.length} sets done
+                                        </p>
+                                    </div>
+                                    <div className="flex gap-3">
+                                        <button
+                                            onClick={resumeWorkout}
+                                            className="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-bold py-4 px-6 rounded-full transition-colors"
+                                        >
+                                            Resume
+                                        </button>
+                                        <button
+                                            onClick={startFreshWorkout}
+                                            className="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-bold py-4 px-6 rounded-full transition-colors"
+                                        >
+                                            Start Fresh
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    ) : (
+                    <div className="w-full max-w-md">
+                        <div className="mb-4 flex justify-between items-center">
+                            <button
+                                onClick={() => setShowHistory(!showHistory)}
+                                className="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-full text-sm transition-colors"
+                            >
+                                {showHistory ? '← Back' : '📊 History'}
+                            </button>
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={() => setSoundEnabled(!soundEnabled)}
+                                    className="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-full text-sm transition-colors flex items-center gap-2"
+                                >
+                                    {soundEnabled ? '🔊' : '🔇'}
+                                    <span>{soundEnabled ? 'Beeps' : 'No Beeps'}</span>
+                                </button>
+                                <button
+                                    onClick={() => setVoiceEnabled(!voiceEnabled)}
+                                    className="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-full text-sm transition-colors flex items-center gap-2"
+                                >
+                                    {voiceEnabled ? '🗣️' : '🤐'}
+                                    <span>{voiceEnabled ? 'Voice' : 'No Voice'}</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        {showHistory ? (
+                            <div className="bg-slate-800 rounded-3xl p-8 shadow-2xl border-4 border-purple-500">
+                                <h2 className="text-3xl font-bold text-white mb-6 text-center">Workout History</h2>
+                                {workoutHistory.length === 0 ? (
+                                    <p className="text-slate-400 text-center">No workouts completed yet</p>
+                                ) : (
+                                    <div className="space-y-3">
+                                        {workoutHistory.slice(0, 3).map((workout, idx) => {
+                                            const date = new Date(workout.date);
+                                            const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                                            const timeStr = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+                                            const minutes = Math.floor(workout.time / 60);
+                                            const seconds = workout.time % 60;
+                                            const isCompleted = workout.completed;
+                                            const mode = workout.mode || 'full';
+                                            
+                                            return (
+                                                <div 
+                                                    key={idx}
+                                                    className={`p-4 rounded-xl ${isCompleted ? 'bg-green-900/30 border-2 border-green-500' : 'bg-slate-700'}`}
+                                                >
+                                                    <div className="flex justify-between items-start mb-2">
+                                                        <div>
+                                                            <div className="flex items-center gap-2 mb-1">
+                                                                <span className={`text-xs px-2 py-1 rounded-full font-bold ${
+                                                                    mode === 'quickie' 
+                                                                        ? 'bg-green-600 text-white' 
+                                                                        : 'bg-purple-600 text-white'
+                                                                }`}>
+                                                                    {mode === 'quickie' ? 'Quickie' : 'Full'}
+                                                                </span>
+                                                            </div>
+                                                            <div className="text-white font-bold text-lg">
+                                                                {workout.total} push-ups {isCompleted && '✓'}
+                                                            </div>
+                                                            <div className="text-slate-300 text-sm">{dateStr} at {timeStr}</div>
+                                                        </div>
+                                                        <div className="text-right">
+                                                            <div className="text-purple-400 font-bold">{minutes}m {seconds}s</div>
+                                                            <div className="text-slate-400 text-sm">{workout.sets} sets</div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                        ) : (
+                        <>
                         
                         <div className="mb-8">
                             <div className="flex justify-between text-white mb-2">
-                                <span className="font-bold text-lg">{totalCompleted} / {TOTAL_GOAL}</span>
+                                <span className="font-bold text-lg">{totalCompleted} / {params.TOTAL_GOAL}</span>
                                 <span className="font-bold text-lg">{Math.floor(progressPercentage)}%</span>
                             </div>
                             <div className="w-full bg-slate-700 rounded-full h-4 overflow-hidden">
@@ -290,7 +576,18 @@
                         )}
 
                         {!workoutComplete && totalCompleted > 0 && (
-                            <div className="mt-6 text-center">
+                            <div className="mt-6 text-center flex gap-3 justify-center">
+                                {totalCompleted >= params.TOTAL_GOAL && (
+                                    <button
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            finishWorkout();
+                                        }}
+                                        className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded-full transition-colors"
+                                    >
+                                        Finish Workout ({params.TOTAL_GOAL}+ Done!)
+                                    </button>
+                                )}
                                 <button
                                     onClick={(e) => {
                                         e.stopPropagation();
@@ -302,7 +599,10 @@
                                 </button>
                             </div>
                         )}
+                        </>
+                        )}
                     </div>
+                    )}
                 </div>
             );
         }
