@@ -94,6 +94,7 @@
             const [showHistory, setShowHistory] = useState(false);
             const [celebrationActive, setCelebrationActive] = useState(false);
             const [currentMilestone, setCurrentMilestone] = useState(null);
+            const [showFinalSetMessage, setShowFinalSetMessage] = useState(false);
             
             const audioContextRef = useRef(null);
             const wakeLockRef = useRef(null);
@@ -195,7 +196,13 @@
             };
             
             const generateReps = () => {
-                // Allow unlimited push-ups - no cap
+                // For Quickie mode, don't exceed the goal
+                if (workoutMode === 'quickie') {
+                    const remaining = params.TOTAL_GOAL - totalCompleted;
+                    if (remaining <= 0) return 0;
+                    return Math.min(params.MIN_REPS, remaining);
+                }
+                // For full mode, unlimited
                 return Math.floor(Math.random() * (params.MAX_REPS - params.MIN_REPS + 1)) + params.MIN_REPS;
             };
             
@@ -366,6 +373,24 @@
                     return () => clearTimeout(timer);
                 } else if (isResting && restTimeLeft === 0) {
                     setIsResting(false);
+                    
+                    // Check if this is the final set for Quickie mode
+                    if (workoutMode === 'quickie') {
+                        const remaining = params.TOTAL_GOAL - totalCompleted;
+                        if (remaining > 0 && remaining <= params.MIN_REPS) {
+                            // This is the final set!
+                            setShowFinalSetMessage(true);
+                            setCurrentReps(remaining);
+                            speak(`Final set! ${remaining} push ups to reach 100! You got this!`);
+                            setTimeout(() => setShowFinalSetMessage(false), 4000);
+                            return;
+                        } else if (remaining <= 0) {
+                            // Quickie complete - stop generating new reps
+                            setCurrentReps(0);
+                            return;
+                        }
+                    }
+                    
                     const newReps = generateReps();
                     setCurrentReps(newReps);
                     speak(`${newReps}`);
@@ -375,6 +400,27 @@
             const handleSetComplete = () => {
                 if (isResting || workoutComplete) return;
                 
+                // For Quickie mode, check if completing this set would exceed goal
+                if (workoutMode === 'quickie' && totalCompleted + currentReps >= params.TOTAL_GOAL) {
+                    sounds.setComplete();
+                    const finalTotal = params.TOTAL_GOAL; // Cap at exactly 100
+                    setTotalCompleted(finalTotal);
+                    setSetHistory([...setHistory, currentReps]);
+                    
+                    // Auto-finish Quickie workout at 100
+                    setTimeout(() => {
+                        setWorkoutComplete(true);
+                        const endT = Date.now();
+                        setEndTime(endT);
+                        const duration = Math.floor((endT - startTime) / 1000);
+                        saveCompletedWorkout(finalTotal, duration, setHistory.length + 1);
+                        localStorage.removeItem('currentWorkout');
+                        sounds.workoutComplete();
+                        speak("Quickie complete! 100 push-ups done!");
+                    }, 500);
+                    return;
+                }
+                
                 sounds.setComplete();
                 speak("Good!", 1.2);
                 
@@ -382,13 +428,14 @@
                 setTotalCompleted(newTotal);
                 setSetHistory([...setHistory, currentReps]);
                 
-                // Check for milestone achievements
-                const previousMilestone = getMilestone(totalCompleted);
-                const newMilestone = getMilestone(newTotal);
-                
-                if (newMilestone && (!previousMilestone || newMilestone.value !== previousMilestone.value)) {
-                    // New milestone reached!
-                    setTimeout(() => triggerCelebration(newMilestone), 1000);
+                // Check for milestone achievements (only in full mode)
+                if (workoutMode === 'full') {
+                    const previousMilestone = getMilestone(totalCompleted);
+                    const newMilestone = getMilestone(newTotal);
+                    
+                    if (newMilestone && (!previousMilestone || newMilestone.value !== previousMilestone.value)) {
+                        setTimeout(() => triggerCelebration(newMilestone), 1000);
+                    }
                 }
                 
                 const restDuration = calculateRestTime(currentReps);
@@ -619,7 +666,7 @@
 
                         <div 
                             onClick={handleSetComplete}
-                            className={`bg-slate-800 rounded-3xl p-12 shadow-2xl border-4 transition-all duration-300 ${
+                            className={`relative bg-slate-800 rounded-3xl p-12 shadow-2xl border-4 transition-all duration-300 ${
                                 workoutComplete 
                                     ? 'border-green-500 cursor-default' 
                                     : isResting 
@@ -630,10 +677,28 @@
                             {workoutComplete ? (
                                 <div className="text-center">
                                     <div className="text-6xl mb-4">🎉</div>
-                                    <h2 className="text-4xl font-bold text-green-400 mb-4">Complete!</h2>
+                                    <h2 className="text-4xl font-bold text-green-400 mb-4">
+                                        {workoutMode === 'quickie' ? 'Quickie Complete!' : 'Complete!'}
+                                    </h2>
                                     <p className="text-white text-xl mb-2">Total: {totalCompleted} push-ups</p>
                                     <p className="text-slate-300 text-lg mb-2">Sets: {setHistory.length}</p>
                                     <p className="text-slate-300 text-lg mb-6">Time: {minutes}m {seconds}s</p>
+                                    
+                                    {workoutMode === 'quickie' && (
+                                        <button
+                                            onClick={() => {
+                                                setWorkoutMode('full');
+                                                setWorkoutComplete(false);
+                                                setIsResting(true);
+                                                setRestTimeLeft(30);
+                                                speak("Let's keep going! Switching to full mode.");
+                                            }}
+                                            className="bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-3 px-8 rounded-full transition-colors mb-4"
+                                        >
+                                            💪 Keep Going?
+                                        </button>
+                                    )}
+                                    
                                     <button
                                         onClick={resetWorkout}
                                         className="bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-8 rounded-full transition-colors"
@@ -658,9 +723,21 @@
                                 </div>
                             ) : (
                                 <div className="text-center">
+                                    {showFinalSetMessage && (
+                                        <div className="absolute inset-0 flex items-center justify-center bg-green-900/90 rounded-3xl animate-pulse">
+                                            <div className="text-center p-4">
+                                                <div className="text-5xl mb-2">💪</div>
+                                                <div className="text-2xl font-bold text-white mb-2">FINAL SET!</div>
+                                                <div className="text-lg text-green-300">You got this!</div>
+                                            </div>
+                                        </div>
+                                    )}
                                     <div className={`${theme.text} text-xl font-bold mb-4`}>DO</div>
                                     <div className="text-9xl font-bold text-white mb-4">{currentReps}</div>
                                     <p className="text-slate-300 text-lg">Tap when complete</p>
+                                    {workoutMode === 'quickie' && totalCompleted + currentReps >= params.TOTAL_GOAL && (
+                                        <p className="text-green-400 text-sm mt-2 animate-pulse">🎯 Final set to 100!</p>
+                                    )}
                                 </div>
                             )}
                         </div>
